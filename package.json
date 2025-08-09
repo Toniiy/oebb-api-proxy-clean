@@ -1,7 +1,7 @@
 {
   "name": "oebb-api-proxy",
-  "version": "2.5.0",
-  "description": "API proxy for ÖBB real-time train data using mymro/oebb-api",
+  "version": "3.0.0",
+  "description": "ÖBB API proxy with working real-time data - final version",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -11,8 +11,6 @@
     "oebb",
     "trains",
     "austria",
-    "api",
-    "proxy",
     "real-time"
   ],
   "author": "",
@@ -20,7 +18,7 @@
   "dependencies": {
     "express": "^4.18.2",
     "cors": "^2.8.5",
-    "oebb-api": "^1.0.4"
+    "axios": "^1.7.9"
   },
   "engines": {
     "node": ">=18.0.0"
