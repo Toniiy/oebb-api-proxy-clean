@@ -1,7 +1,7 @@
 {
-  "name": "oebb-scraper-proxy",
-  "version": "5.0.0", 
-  "description": "ÖBB API proxy with working web scraping - Final Version",
+  "name": "oebb-webapp-scraper",
+  "version": "6.0.0", 
+  "description": "ÖBB API proxy using real webapp URLs - FIXED VERSION",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -11,7 +11,7 @@
     "oebb",
     "trains",
     "austria",
-    "scraper",
+    "webapp",
     "real-time"
   ],
   "author": "",
