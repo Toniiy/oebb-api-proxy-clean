@@ -1,7 +1,7 @@
 {
   "name": "oebb-scraper-proxy",
-  "version": "4.1.0",
-  "description": "ÖBB API proxy with working web scraping for real live data",
+  "version": "5.0.0", 
+  "description": "ÖBB API proxy with working web scraping - Final Version",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
