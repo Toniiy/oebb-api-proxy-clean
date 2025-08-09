@@ -1,12 +1,30 @@
 const express = require('express');
 const cors = require('cors');
 const { createClient } = require('hafas-client');
-const oebbProfile = require('hafas-client/p/oebb/index.js');
+  const oebbProfile = require('hafas-client/p/oebb/index.js');
 
-const app = express();
-app.use(cors());
-oebbProfile.locale = 'de-AT';
-const hafas = createClient(oebbProfile, 'oebb-proxy');
+  const app = express();
+  app.use(cors());
+
+  // Create a new profile object with locale
+  const customProfile = {
+    ...oebbProfile,
+    locale: 'de-AT'
+  };
+  const hafas = createClient(customProfile, 'oebb-proxy');
+
+  The problem: You can't modify properties on the imported profile object. We need to create a new object that includes
+   the locale.
+
+  Alternative approach if that doesn't work:
+  const oebbProfile = require('hafas-client/p/oebb/index.js');
+
+  const app = express();
+  app.use(cors());
+
+  // Clone and modify the profile
+  const customProfile = Object.assign({}, oebbProfile, { locale: 'de-AT' });
+  const hafas = createClient(customProfile, 'oebb-proxy');
 
 // caching settings
 const CACHE_DURATION = parseInt(process.env.CACHE_DURATION || '300000');
