@@ -1,7 +1,7 @@
 {
-  "name": "oebb-webapp-scraper",
-  "version": "6.0.0", 
-  "description": "ÖBB API proxy using real webapp URLs - FIXED VERSION",
+  "name": "oebb-proxy-v7",
+  "version": "7.0.0", 
+  "description": "ÖBB Proxy v7 - WebApp Scraper with Fixed Regex",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -11,8 +11,7 @@
     "oebb",
     "trains",
     "austria",
-    "webapp",
-    "real-time"
+    "proxy"
   ],
   "author": "",
   "license": "MIT",
