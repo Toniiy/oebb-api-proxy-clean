@@ -66,13 +66,17 @@ function parseTransportRestData(journeys) {
     
     const trains = [];
     
-    for (const journey of journeys.slice(0, 3)) {
+    for (const journey of journeys) {
       if (!journey.legs || journey.legs.length === 0) continue;
       
       const leg = journey.legs[0]; // First leg is the direct train
       if (!leg.line || !leg.departure || !leg.arrival) continue;
       
-      const departureTime = new Date(leg.departure).toLocaleTimeString('de-DE', {
+      // Parse actual departure time (including delays)
+      const actualDepartureDate = new Date(leg.departure);
+      const plannedDepartureDate = new Date(leg.plannedDeparture || leg.departure);
+      
+      const departureTime = actualDepartureDate.toLocaleTimeString('de-DE', {
         hour: '2-digit',
         minute: '2-digit',
         timeZone: 'Europe/Vienna'
@@ -99,13 +103,26 @@ function parseTransportRestData(journeys) {
         trainNumber: trainNumber,
         delay: Math.floor(delay / 60), // Convert seconds to minutes
         status: status,
-        platform: platform
+        platform: platform,
+        actualDepartureTime: actualDepartureDate, // For sorting
+        plannedDepartureTime: plannedDepartureDate
       });
       
-      console.log(`✅ Parsed: ${trainNumber} ${departureTime} (${Math.floor(delay / 60)}min delay)`);
+      console.log(`✅ Parsed: ${trainNumber} planned:${plannedDepartureDate.toLocaleTimeString('de-DE', {hour:'2-digit',minute:'2-digit'})} actual:${departureTime} (${Math.floor(delay / 60)}min delay)`);
     }
     
-    return trains;
+    // Sort by actual departure time (planned + delay)
+    trains.sort((a, b) => a.actualDepartureTime.getTime() - b.actualDepartureTime.getTime());
+    
+    // Remove sorting fields and return only first 3
+    const sortedTrains = trains.slice(0, 3).map(train => {
+      const { actualDepartureTime, plannedDepartureTime, ...cleanTrain } = train;
+      return cleanTrain;
+    });
+    
+    console.log(`📊 Sorted ${sortedTrains.length} trains by actual departure time`);
+    
+    return sortedTrains;
     
   } catch (error) {
     console.error('❌ Error parsing Transport REST data:', error);
