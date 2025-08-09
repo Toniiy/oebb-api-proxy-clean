@@ -1,362 +1,516 @@
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
+const cheerio = require('cheerio');
 
 const app = express();
 app.use(cors());
 
-console.log('Starting ÖBB Real-Time API Proxy...');
+console.log('🚄 Starting ÖBB Web Scraper Proxy...');
 
-// Cache for 90 seconds - frequent updates for real-time data
-const CACHE_DURATION = parseInt(process.env.CACHE_DURATION || '90000');
-const cache = {
-  stpLinz: { data: null, timestamp: 0, source: null },
-  linzStp: { data: null, timestamp: 0, source: null }
-};
+// NO CACHE - Always fresh data as requested
+let isScrapingInProgress = false;
 
-// Try multiple approaches to get real ÖBB data
-async function fetchRealTrainData(fromStation, toStation, direction) {
-  console.log(`Attempting to fetch real data: ${fromStation} → ${toStation}`);
-  
-  // Method 1: Try ÖBB web scraping approach
-  try {
-    const realData = await tryOebbWebScraping(fromStation, toStation);
-    if (realData && realData.length > 0) {
-      console.log(`✅ Got real data via web scraping: ${realData.length} trains`);
-      return { trains: realData, source: 'oebb-web' };
-    }
-  } catch (error) {
-    console.log(`❌ Web scraping failed:`, error.message);
+async function scrapeOebbWebsite(fromStation, toStation) {
+  if (isScrapingInProgress) {
+    throw new Error('Scraping already in progress, please wait');
   }
-
-  // Method 2: Try third-party transport APIs  
-  try {
-    const thirdPartyData = await tryThirdPartyAPIs(fromStation, toStation);
-    if (thirdPartyData && thirdPartyData.length > 0) {
-      console.log(`✅ Got real data via third-party API: ${thirdPartyData.length} trains`);
-      return { trains: thirdPartyData, source: 'third-party' };
-    }
-  } catch (error) {
-    console.log(`❌ Third-party APIs failed:`, error.message);
-  }
-
-  // Method 3: Enhanced realistic fallback with actual timetable patterns
-  console.log(`🔄 Using enhanced realistic data based on actual ÖBB schedules`);
-  const enhancedData = generateRealisticSchedule(fromStation, toStation);
-  return { trains: enhancedData, source: 'realistic-schedule' };
-}
-
-async function tryOebbWebScraping(fromStation, toStation) {
-  // This is a placeholder - in a real implementation you'd parse ÖBB's web interface
-  // For now, throw error to move to next method
-  throw new Error('Web scraping not implemented');
-}
-
-async function tryThirdPartyAPIs(fromStation, toStation) {
-  // Try to use any working public transport APIs that might have ÖBB data
   
-  // Example: Try to use a working transport API if available
+  isScrapingInProgress = true;
+  console.log(`🔍 Scraping ÖBB website: ${fromStation} → ${toStation}`);
+  
   try {
-    // This would be where we'd try APIs like:
-    // - transport.rest variants that actually work
-    // - European transport APIs
-    // - GTFS data sources
+    // Method 1: Try ÖBB's simpler mobile interface
+    const mobileData = await tryMobileScraping(fromStation, toStation);
+    if (mobileData && mobileData.length > 0) {
+      console.log(`✅ Got ${mobileData.length} trains from mobile interface`);
+      return mobileData;
+    }
     
-    // For now, throw error to move to fallback
-    throw new Error('No working third-party APIs found');
+    // Method 2: Try ÖBB's API endpoints directly
+    const apiData = await tryDirectApiCalls(fromStation, toStation);
+    if (apiData && apiData.length > 0) {
+      console.log(`✅ Got ${apiData.length} trains from direct API`);
+      return apiData;
+    }
+    
+    // Method 3: Try parsing the main website
+    const webData = await tryWebsiteScraping(fromStation, toStation);
+    if (webData && webData.length > 0) {
+      console.log(`✅ Got ${webData.length} trains from website scraping`);
+      return webData;
+    }
+    
+    throw new Error('All scraping methods failed');
+    
+  } finally {
+    isScrapingInProgress = false;
+  }
+}
+
+async function tryMobileScraping(fromStation, toStation) {
+  try {
+    console.log('📱 Trying mobile interface...');
+    
+    // ÖBB mobile URLs are simpler to parse
+    const stationMapping = {
+      'St. Pölten': '8103002',
+      'Linz': '8100009'
+    };
+    
+    const fromId = stationMapping[fromStation];
+    const toId = stationMapping[toStation];
+    
+    if (!fromId || !toId) {
+      throw new Error('Station mapping not found');
+    }
+    
+    // Try ÖBB's mobile query endpoint
+    const now = new Date();
+    const dateStr = now.toISOString().split('T')[0].replace(/-/g, '.');
+    const timeStr = now.toTimeString().substring(0, 5);
+    
+    const url = `https://fahrplan.oebb.at/bin/query.exe/dn?n=1&i=${fromId}&Z=${toId}&d=${dateStr}&t=${timeStr}&start=1`;
+    
+    console.log(`🔗 Trying URL: ${url}`);
+    
+    const response = await axios.get(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'de-AT,de;q=0.9,en;q=0.8'
+      },
+      timeout: 15000
+    });
+    
+    if (response.data && response.data.includes('journey')) {
+      console.log('📄 Got HTML response, parsing...');
+      return parseMobileHtml(response.data);
+    }
+    
+    throw new Error('No journey data in mobile response');
+    
   } catch (error) {
+    console.log(`❌ Mobile scraping failed: ${error.message}`);
     throw error;
   }
 }
 
-function generateRealisticSchedule(fromStation, toStation) {
-  console.log(`Generating realistic schedule for ${fromStation} → ${toStation}`);
+async function tryDirectApiCalls(fromStation, toStation) {
+  try {
+    console.log('🔗 Trying direct API calls...');
+    
+    // Try the HAFAS mgate endpoint with proper parameters
+    const stationIds = {
+      'St. Pölten': '008103002',
+      'Linz': '008100009'
+    };
+    
+    const fromId = stationIds[fromStation];
+    const toId = stationIds[toStation];
+    
+    const now = new Date();
+    const requestData = {
+      lang: 'de',
+      svcReqL: [{
+        cfg: { polyEnc: 'GPA', rtMode: 'HYBRID' },
+        meth: 'TripSearch',
+        req: {
+          depLocL: [{ lid: `A=1@L=${fromId}@` }],
+          arrLocL: [{ lid: `A=1@L=${toId}@` }],
+          outDate: now.toISOString().split('T')[0].replace(/-/g, ''),
+          outTime: now.toTimeString().substring(0, 5).replace(':', ''),
+          jnyFltrL: [{ type: 'PROD', mode: 'INC', value: '1023' }],
+          numF: 3,
+          getPasslist: false,
+          getPolyline: false
+        }
+      }],
+      client: { id: 'OEBB', type: 'WEB', name: 'webapp' },
+      ver: '1.16',
+      auth: { type: 'AID', aid: 'OWDL4fE4ixNiPBBm' }
+    };
+    
+    console.log('📡 Making HAFAS API call...');
+    
+    const response = await axios.post('https://fahrplan.oebb.at/bin/mgate.exe', requestData, {
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Referer': 'https://fahrplan.oebb.at/',
+        'Accept': 'application/json'
+      },
+      timeout: 15000
+    });
+    
+    if (response.data && response.data.svcResL) {
+      console.log('📊 Got HAFAS response, parsing...');
+      return parseHafasResponse(response.data);
+    }
+    
+    throw new Error('Invalid HAFAS response structure');
+    
+  } catch (error) {
+    console.log(`❌ Direct API failed: ${error.message}`);
+    throw error;
+  }
+}
+
+async function tryWebsiteScraping(fromStation, toStation) {
+  try {
+    console.log('🌐 Trying website scraping...');
+    
+    // Build the URL similar to your example
+    const baseUrl = 'https://fahrplan.oebb.at/webapp/';
+    const fromEncoded = fromStation === 'St. Pölten' ? 
+      'A%3D1%40O%3DSt.P%C3%B6lten%20Hbf%40X%3D15623800%40Y%3D48208331%40U%3D81%40L%3D008100008%40B%3D1%40p%3D1275041666%40' :
+      'A%3D1%40O%3DLinz%2FDonau%20Hbf%40X%3D14291814%40Y%3D48290150%40U%3D81%40L%3D008100013%40B%3D1%40p%3D1275041666%40';
+    
+    const toEncoded = toStation === 'Linz' ? 
+      'A%3D1%40O%3DLinz%2FDonau%20Hbf%40X%3D14291814%40Y%3D48290150%40U%3D81%40L%3D008100013%40B%3D1%40p%3D1275041666%40' :
+      'A%3D1%40O%3DSt.P%C3%B6lten%20Hbf%40X%3D15623800%40Y%3D48208331%40U%3D81%40L%3D008100008%40B%3D1%40p%3D1275041666%40';
+    
+    const now = new Date();
+    const dateStr = now.toLocaleDateString('de-AT').replace(/\\//g, '.');
+    const timeStr = now.toTimeString().substring(0, 8);
+    
+    const url = `${baseUrl}?context=TP&SID=${fromEncoded}&ZID=${toEncoded}&date=${dateStr}&time=${timeStr}&timeSel=1&returnTimeSel=1&journeyProducts=7167&start=1`;
+    
+    console.log(`🔗 Trying website URL...`);
+    
+    const response = await axios.get(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'de-AT,de;q=0.9,en;q=0.8'
+      },
+      timeout: 20000
+    });
+    
+    if (response.data) {
+      console.log('📄 Got website response, parsing...');
+      return parseWebsiteHtml(response.data);
+    }
+    
+    throw new Error('No website response data');
+    
+  } catch (error) {
+    console.log(`❌ Website scraping failed: ${error.message}`);
+    throw error;
+  }
+}
+
+function parseMobileHtml(html) {
+  try {
+    const $ = cheerio.load(html);
+    const trains = [];
+    
+    // Look for journey/connection elements in mobile interface
+    $('tr.journey, tr.connection, .connection-row').each((i, element) => {
+      if (i >= 3) return false; // Limit to 3 trains
+      
+      const $row = $(element);
+      
+      // Try to extract departure time
+      const depTime = $row.find('.time, .dep-time, td:first-child').first().text().trim();
+      
+      // Try to extract train type/number
+      const trainInfo = $row.find('.train, .product, .line').first().text().trim();
+      
+      // Try to extract delay
+      const delayElement = $row.find('.delay, .rt-info, .realtime');
+      const delayText = delayElement.text().trim();
+      const delay = delayText ? parseInt(delayText.replace(/[^0-9]/g, '')) || 0 : 0;
+      
+      if (depTime && depTime.match(/\\d{1,2}:\\d{2}/)) {
+        // Calculate arrival time (approximate)
+        const [depHour, depMin] = depTime.split(':').map(Number);
+        const arrivalMinutes = (depHour * 60 + depMin + 71) % (24 * 60); // 71 min journey
+        const arrHour = Math.floor(arrivalMinutes / 60);
+        const arrMin = arrivalMinutes % 60;
+        const arrTime = `${arrHour.toString().padStart(2, '0')}:${arrMin.toString().padStart(2, '0')}`;
+        
+        const trainType = extractTrainType(trainInfo);
+        const status = delay > 0 ? (delay <= 5 ? 'slightly-delayed' : 'delayed') : 'on-time';
+        
+        trains.push({
+          departure: depTime,
+          arrival: arrTime,
+          trainType: trainType,
+          trainNumber: trainInfo || `${trainType} ${depTime.replace(':', '')}`,
+          delay: delay,
+          status: status,
+          platform: '?'
+        });
+        
+        console.log(`✅ Parsed train: ${trainInfo} ${depTime} (${delay}min delay)`);
+      }
+    });
+    
+    return trains;
+    
+  } catch (error) {
+    console.error('Error parsing mobile HTML:', error);
+    return [];
+  }
+}
+
+function parseHafasResponse(data) {
+  try {
+    const trains = [];
+    
+    if (data.svcResL && data.svcResL[0] && data.svcResL[0].res && data.svcResL[0].res.outConL) {
+      const journeys = data.svcResL[0].res.outConL.slice(0, 3);
+      
+      for (const journey of journeys) {
+        if (journey.secL && journey.secL.length > 0) {
+          const firstSection = journey.secL[0];
+          
+          // Extract departure info
+          const depTime = firstSection.dep ? formatHafasTime(firstSection.dep.dTimeS) : '??:??';
+          const arrTime = firstSection.arr ? formatHafasTime(firstSection.arr.aTimeS) : '??:??';
+          
+          // Extract train info from journey products
+          const prodL = data.svcResL[0].res.common.prodL;
+          const product = prodL[firstSection.dep.prodX] || {};
+          const trainName = product.name || 'Train';
+          const trainType = extractTrainType(trainName);
+          
+          // Extract delay
+          const depDelay = firstSection.dep.dDelay ? firstSection.dep.dDelay / 60 : 0;
+          const delay = Math.round(depDelay);
+          const status = delay > 0 ? (delay <= 5 ? 'slightly-delayed' : 'delayed') : 'on-time';
+          
+          trains.push({
+            departure: depTime,
+            arrival: arrTime,
+            trainType: trainType,
+            trainNumber: trainName,
+            delay: delay,
+            status: status,
+            platform: firstSection.dep.dPlatfS || '?'
+          });
+          
+          console.log(`✅ Parsed HAFAS train: ${trainName} ${depTime} (${delay}min delay)`);
+        }
+      }
+    }
+    
+    return trains;
+    
+  } catch (error) {
+    console.error('Error parsing HAFAS response:', error);
+    return [];
+  }
+}
+
+function parseWebsiteHtml(html) {
+  try {
+    const $ = cheerio.load(html);
+    const trains = [];
+    
+    // Look for various selectors that might contain train data
+    const selectors = [
+      '.journey-row',
+      '.connection',
+      '.trip-result',
+      '[class*="journey"]',
+      '[class*="connection"]',
+      'tr[class*="result"]'
+    ];
+    
+    for (const selector of selectors) {
+      $(selector).each((i, element) => {
+        if (i >= 3 || trains.length >= 3) return false;
+        
+        const $row = $(element);
+        const text = $row.text();
+        
+        // Look for time patterns
+        const timeMatches = text.match(/(\\d{1,2}:\\d{2})/g);
+        if (timeMatches && timeMatches.length >= 2) {
+          const depTime = timeMatches[0];
+          const arrTime = timeMatches[1];
+          
+          // Look for train type patterns
+          const trainMatch = text.match(/(RJ|RJX|ICE|IC|WB|D|REX|S|R)\\s*(\\d+)/);
+          const trainType = trainMatch ? trainMatch[1] : 'Train';
+          const trainNumber = trainMatch ? `${trainMatch[1]} ${trainMatch[2]}` : `${trainType} ${depTime.replace(':', '')}`;
+          
+          // Look for delay pattern
+          const delayMatch = text.match(/(\\+|Vers|Delay)\\s*(\\d+)/i);
+          const delay = delayMatch ? parseInt(delayMatch[2]) : 0;
+          const status = delay > 0 ? (delay <= 5 ? 'slightly-delayed' : 'delayed') : 'on-time';
+          
+          trains.push({
+            departure: depTime,
+            arrival: arrTime,
+            trainType: trainType,
+            trainNumber: trainNumber,
+            delay: delay,
+            status: status,
+            platform: '?'
+          });
+          
+          console.log(`✅ Parsed website train: ${trainNumber} ${depTime} (${delay}min delay)`);
+        }
+      });
+      
+      if (trains.length > 0) break; // If we found trains with this selector, stop trying others
+    }
+    
+    return trains;
+    
+  } catch (error) {
+    console.error('Error parsing website HTML:', error);
+    return [];
+  }
+}
+
+function formatHafasTime(timeString) {
+  if (!timeString || timeString.length < 4) return '??:??';
+  
+  try {
+    const hour = timeString.substring(0, 2);
+    const minute = timeString.substring(2, 4);
+    return `${hour}:${minute}`;
+  } catch (error) {
+    return '??:??';
+  }
+}
+
+function extractTrainType(trainName) {
+  if (!trainName) return 'Train';
+  
+  const name = trainName.toUpperCase();
+  
+  if (name.includes('RJX')) return 'RJX';
+  if (name.includes('RJ')) return 'RJ';
+  if (name.includes('ICE')) return 'ICE';
+  if (name.includes('IC ') || name.startsWith('IC')) return 'IC';
+  if (name.includes('WESTBAHN') || name.includes('WB')) return 'WB';
+  if (name.includes('NIGHTJET') || name.includes('NJ')) return 'NJ';
+  if (name.includes('REX')) return 'REX';
+  if (name.includes('D ') || name.startsWith('D ')) return 'D';
+  if (name.includes('S ') || name.startsWith('S')) return 'S';
+  if (name.includes('R ') || name.startsWith('R ')) return 'R';
+  
+  return 'Train';
+}
+
+// Emergency fallback - only used if ALL scraping fails
+function getEmergencyData(fromStation, toStation) {
+  console.log('🆘 Using emergency fallback data');
   
   const now = new Date();
   const currentHour = now.getHours();
   const currentMinute = now.getMinutes();
   
-  // Real ÖBB schedule patterns based on actual timetables
-  let schedulePattern;
-  let journeyTime;
+  // Next departure in ~15 minutes
+  let nextHour = currentHour;
+  let nextMinute = currentMinute + 15;
   
-  if (fromStation === 'St. Pölten' && toStation === 'Linz') {
-    // St. Pölten → Linz: Actual ÖBB patterns
-    schedulePattern = [
-      // Early morning
-      { hour: 5, minute: 42, type: 'RJ', duration: 71, platform: '2' },
-      { hour: 6, minute: 42, type: 'RJ', duration: 71, platform: '2' },
-      { hour: 7, minute: 12, type: 'WB', duration: 68, platform: '1' },
-      { hour: 7, minute: 42, type: 'RJ', duration: 71, platform: '2' },
-      { hour: 8, minute: 12, type: 'WB', duration: 68, platform: '1' },
-      { hour: 8, minute: 42, type: 'RJ', duration: 71, platform: '2' },
-      { hour: 9, minute: 12, type: 'WB', duration: 68, platform: '1' },
-      { hour: 9, minute: 42, type: 'RJ', duration: 71, platform: '2' },
-      { hour: 10, minute: 12, type: 'WB', duration: 68, platform: '1' },
-      { hour: 10, minute: 42, type: 'RJ', duration: 71, platform: '2' },
-      { hour: 11, minute: 12, type: 'WB', duration: 68, platform: '1' },
-      { hour: 11, minute: 42, type: 'RJ', duration: 71, platform: '2' },
-      { hour: 12, minute: 12, type: 'WB', duration: 68, platform: '1' },
-      { hour: 12, minute: 42, type: 'RJ', duration: 71, platform: '2' },
-      { hour: 13, minute: 12, type: 'WB', duration: 68, platform: '1' },
-      { hour: 13, minute: 42, type: 'RJ', duration: 71, platform: '2' },
-      { hour: 14, minute: 12, type: 'WB', duration: 68, platform: '1' },
-      { hour: 14, minute: 42, type: 'RJ', duration: 71, platform: '2' },
-      { hour: 15, minute: 12, type: 'WB', duration: 68, platform: '1' },
-      { hour: 15, minute: 42, type: 'RJ', duration: 71, platform: '2' },
-      { hour: 16, minute: 12, type: 'WB', duration: 68, platform: '1' },
-      { hour: 16, minute: 42, type: 'RJ', duration: 71, platform: '2' },
-      { hour: 17, minute: 12, type: 'WB', duration: 68, platform: '1' },
-      { hour: 17, minute: 42, type: 'RJ', duration: 71, platform: '2' },
-      { hour: 18, minute: 12, type: 'WB', duration: 68, platform: '1' },
-      { hour: 18, minute: 42, type: 'RJ', duration: 71, platform: '2' },
-      { hour: 19, minute: 12, type: 'WB', duration: 68, platform: '1' },
-      { hour: 19, minute: 42, type: 'RJ', duration: 71, platform: '2' },
-      { hour: 20, minute: 12, type: 'WB', duration: 68, platform: '1' },
-      { hour: 20, minute: 42, type: 'RJ', duration: 71, platform: '2' },
-      { hour: 21, minute: 12, type: 'WB', duration: 68, platform: '1' },
-      { hour: 21, minute: 42, type: 'RJ', duration: 71, platform: '2' },
-      { hour: 22, minute: 42, type: 'RJ', duration: 71, platform: '2' }
-    ];
-  } else {
-    // Linz → St. Pölten: Actual ÖBB patterns  
-    schedulePattern = [
-      { hour: 5, minute: 7, type: 'RJ', duration: 71, platform: '1' },
-      { hour: 6, minute: 7, type: 'RJ', duration: 71, platform: '1' },
-      { hour: 6, minute: 48, type: 'WB', duration: 68, platform: '4' },
-      { hour: 7, minute: 7, type: 'RJ', duration: 71, platform: '1' },
-      { hour: 7, minute: 48, type: 'WB', duration: 68, platform: '4' },
-      { hour: 8, minute: 7, type: 'RJ', duration: 71, platform: '1' },
-      { hour: 8, minute: 48, type: 'WB', duration: 68, platform: '4' },
-      { hour: 9, minute: 7, type: 'RJ', duration: 71, platform: '1' },
-      { hour: 9, minute: 48, type: 'WB', duration: 68, platform: '4' },
-      { hour: 10, minute: 7, type: 'RJ', duration: 71, platform: '1' },
-      { hour: 10, minute: 48, type: 'WB', duration: 68, platform: '4' },
-      { hour: 11, minute: 7, type: 'RJ', duration: 71, platform: '1' },
-      { hour: 11, minute: 48, type: 'WB', duration: 68, platform: '4' },
-      { hour: 12, minute: 7, type: 'RJ', duration: 71, platform: '1' },
-      { hour: 12, minute: 48, type: 'WB', duration: 68, platform: '4' },
-      { hour: 13, minute: 7, type: 'RJ', duration: 71, platform: '1' },
-      { hour: 13, minute: 48, type: 'WB', duration: 68, platform: '4' },
-      { hour: 14, minute: 7, type: 'RJ', duration: 71, platform: '1' },
-      { hour: 14, minute: 48, type: 'WB', duration: 68, platform: '4' },
-      { hour: 15, minute: 7, type: 'RJ', duration: 71, platform: '1' },
-      { hour: 15, minute: 48, type: 'WB', duration: 68, platform: '4' },
-      { hour: 16, minute: 7, type: 'RJ', duration: 71, platform: '1' },
-      { hour: 16, minute: 48, type: 'WB', duration: 68, platform: '4' },
-      { hour: 17, minute: 7, type: 'RJ', duration: 71, platform: '1' },
-      { hour: 17, minute: 48, type: 'WB', duration: 68, platform: '4' },
-      { hour: 18, minute: 7, type: 'RJ', duration: 71, platform: '1' },
-      { hour: 18, minute: 48, type: 'WB', duration: 68, platform: '4' },
-      { hour: 19, minute: 7, type: 'RJ', duration: 71, platform: '1' },
-      { hour: 19, minute: 48, type: 'WB', duration: 68, platform: '4' },
-      { hour: 20, minute: 7, type: 'RJ', duration: 71, platform: '1' },
-      { hour: 20, minute: 48, type: 'WB', duration: 68, platform: '4' },
-      { hour: 21, minute: 7, type: 'RJ', duration: 71, platform: '1' },
-      { hour: 22, minute: 7, type: 'RJ', duration: 71, platform: '1' }
-    ];
+  if (nextMinute >= 60) {
+    nextHour = (nextHour + 1) % 24;
+    nextMinute -= 60;
   }
   
-  // Find next 3 trains after current time
-  const currentTotalMinutes = currentHour * 60 + currentMinute;
-  const nextTrains = [];
+  const trains = [];
+  const trainTypes = ['RJ', 'WB', 'RJ'];
   
-  for (const train of schedulePattern) {
-    const trainTotalMinutes = train.hour * 60 + train.minute;
+  for (let i = 0; i < 3; i++) {
+    const depHour = (nextHour + Math.floor(i * 0.5)) % 24;
+    const depMin = (nextMinute + (i * 30)) % 60;
     
-    if (trainTotalMinutes > currentTotalMinutes && nextTrains.length < 3) {
-      const departureTime = `${train.hour.toString().padStart(2, '0')}:${train.minute.toString().padStart(2, '0')}`;
-      
-      const arrivalMinutes = (trainTotalMinutes + train.duration) % (24 * 60);
-      const arrivalHour = Math.floor(arrivalMinutes / 60);
-      const arrivalMin = arrivalMinutes % 60;
-      const arrivalTime = `${arrivalHour.toString().padStart(2, '0')}:${arrivalMin.toString().padStart(2, '0')}`;
-      
-      // Add realistic delays based on time of day and train type
-      let delay = 0;
-      const delayProbability = Math.random();
-      
-      // Rush hour delays more likely
-      if ((currentHour >= 7 && currentHour <= 9) || (currentHour >= 17 && currentHour <= 19)) {
-        if (delayProbability > 0.7) {
-          delay = Math.floor(Math.random() * 12) + 1; // 1-12 minutes
-        }
-      } else {
-        if (delayProbability > 0.85) {
-          delay = Math.floor(Math.random() * 8) + 1; // 1-8 minutes
-        }
-      }
-      
-      let status = 'on-time';
-      if (delay > 0) {
-        status = delay <= 5 ? 'slightly-delayed' : 'delayed';
-      }
-      
-      // Generate realistic train numbers
-      const trainNumber = generateTrainNumber(train.type, train.hour, train.minute);
-      
-      nextTrains.push({
-        departure: departureTime,
-        arrival: arrivalTime,
-        trainType: train.type,
-        trainNumber: trainNumber,
-        delay: delay,
-        status: status,
-        platform: train.platform
-      });
-    }
+    const depTime = `${depHour.toString().padStart(2, '0')}:${depMin.toString().padStart(2, '0')}`;
+    
+    const arrivalMinutes = (depHour * 60 + depMin + 71) % (24 * 60);
+    const arrHour = Math.floor(arrivalMinutes / 60);
+    const arrMin = arrivalMinutes % 60;
+    const arrTime = `${arrHour.toString().padStart(2, '0')}:${arrMin.toString().padStart(2, '0')}`;
+    
+    const trainType = trainTypes[i];
+    const trainNumber = `${trainType} ${540 + i * 2}`;
+    const delay = Math.random() > 0.8 ? Math.floor(Math.random() * 8) : 0;
+    const status = delay > 0 ? (delay <= 5 ? 'slightly-delayed' : 'delayed') : 'on-time';
+    
+    trains.push({
+      departure: depTime,
+      arrival: arrTime,
+      trainType: trainType,
+      trainNumber: trainNumber,
+      delay: delay,
+      status: status,
+      platform: fromStation === 'St. Pölten' ? '2' : '1'
+    });
   }
   
-  // If no trains found for today, get first trains from tomorrow
-  if (nextTrains.length < 3) {
-    const remainingCount = 3 - nextTrains.length;
-    for (let i = 0; i < remainingCount; i++) {
-      const train = schedulePattern[i];
-      if (train) {
-        const departureTime = `${train.hour.toString().padStart(2, '0')}:${train.minute.toString().padStart(2, '0')}`;
-        
-        const arrivalMinutes = train.hour * 60 + train.minute + train.duration;
-        const arrivalHour = Math.floor(arrivalMinutes / 60) % 24;
-        const arrivalMin = arrivalMinutes % 60;
-        const arrivalTime = `${arrivalHour.toString().padStart(2, '0')}:${arrivalMin.toString().padStart(2, '0')}`;
-        
-        const trainNumber = generateTrainNumber(train.type, train.hour, train.minute);
-        
-        nextTrains.push({
-          departure: departureTime,
-          arrival: arrivalTime,
-          trainType: train.type,
-          trainNumber: trainNumber,
-          delay: 0,
-          status: 'scheduled',
-          platform: train.platform
-        });
-      }
-    }
-  }
-  
-  return nextTrains;
+  return trains;
 }
 
-function generateTrainNumber(type, hour, minute) {
-  if (type === 'RJ') {
-    // RJ trains: typically numbered in 540+ range
-    const base = 540 + (hour % 12) * 2 + (minute > 30 ? 1 : 0);
-    return `RJ ${base}`;
-  } else if (type === 'WB') {
-    // WESTbahn: typically 8640+ range  
-    const base = 8640 + (hour % 12) * 2 + (minute > 30 ? 1 : 0);
-    return `WB ${base}`;
-  } else if (type === 'RJX') {
-    // RJX: typically 760+ range
-    const base = 760 + (hour % 8) * 2;
-    return `RJX ${base}`;
-  } else if (type === 'IC') {
-    // IC: typically 500+ range
-    const base = 500 + (hour % 10) * 2;
-    return `IC ${base}`;
-  }
-  
-  return `${type} ${hour}${minute}`;
-}
-
-async function getJourneys(fromStation, toStation, cacheKey) {
-  const now = Date.now();
-  
-  // Check cache
-  if (cache[cacheKey] && cache[cacheKey].data && 
-      now - cache[cacheKey].timestamp < CACHE_DURATION) {
-    console.log(`📋 Using cached data for ${cacheKey} (age: ${Math.round((now - cache[cacheKey].timestamp)/1000)}s)`);
-    return {
-      trains: cache[cacheKey].data,
-      source: cache[cacheKey].source,
-      cached: true
-    };
-  }
+// Main endpoints
+app.get('/trains/stpoelten-linz', async (req, res) => {
+  console.log('🚄 Request: St. Pölten → Linz');
   
   try {
-    console.log(`🔄 Fetching fresh data for ${cacheKey}`);
-    const result = await fetchRealTrainData(fromStation, toStation);
+    const trains = await scrapeOebbWebsite('St. Pölten', 'Linz');
     
-    // Update cache
-    cache[cacheKey] = {
-      data: result.trains,
-      source: result.source,
-      timestamp: now
-    };
-    
-    return {
-      trains: result.trains,
-      source: result.source,
-      cached: false
-    };
+    if (trains && trains.length > 0) {
+      res.json({
+        route: "St. Pölten → Linz",
+        timestamp: new Date().toISOString(),
+        trains: trains,
+        source: 'live-scraping',
+        realTimeData: true
+      });
+    } else {
+      throw new Error('No train data from scraping');
+    }
     
   } catch (error) {
-    console.error(`❌ Error in getJourneys for ${cacheKey}:`, error);
+    console.error(`❌ Scraping failed: ${error.message}`);
     
-    // Return stale cache if available
-    if (cache[cacheKey] && cache[cacheKey].data) {
-      console.log(`📋 Returning stale cached data for ${cacheKey}`);
-      return {
-        trains: cache[cacheKey].data,
-        source: cache[cacheKey].source + '-stale',
-        cached: true
-      };
-    }
-    
-    // Final fallback
-    console.log(`🆘 Emergency fallback for ${cacheKey}`);
-    const fallbackData = generateRealisticSchedule(fromStation, toStation);
-    return {
-      trains: fallbackData,
-      source: 'emergency-fallback',
-      cached: false
-    };
-  }
-}
-
-app.get('/trains/stpoelten-linz', async (req, res) => {
-  try {
-    const result = await getJourneys('St. Pölten', 'Linz', 'stpLinz');
-    
+    const emergencyData = getEmergencyData('St. Pölten', 'Linz');
     res.json({
       route: "St. Pölten → Linz",
       timestamp: new Date().toISOString(),
-      trains: result.trains,
-      source: result.source,
-      cached: result.cached,
-      realTimeAttempted: true
-    });
-  } catch (error) {
-    console.error('❌ Route handler error:', error);
-    res.status(500).json({
-      error: true,
-      message: 'Failed to fetch train data',
-      trains: generateRealisticSchedule('St. Pölten', 'Linz'),
-      source: 'error-fallback'
+      trains: emergencyData,
+      source: 'emergency-fallback',
+      realTimeData: false,
+      error: error.message
     });
   }
 });
 
 app.get('/trains/linz-stpoelten', async (req, res) => {
+  console.log('🚄 Request: Linz → St. Pölten');
+  
   try {
-    const result = await getJourneys('Linz', 'St. Pölten', 'linzStp');
+    const trains = await scrapeOebbWebsite('Linz', 'St. Pölten');
     
+    if (trains && trains.length > 0) {
+      res.json({
+        route: "Linz → St. Pölten",
+        timestamp: new Date().toISOString(),
+        trains: trains,
+        source: 'live-scraping',
+        realTimeData: true
+      });
+    } else {
+      throw new Error('No train data from scraping');
+    }
+    
+  } catch (error) {
+    console.error(`❌ Scraping failed: ${error.message}`);
+    
+    const emergencyData = getEmergencyData('Linz', 'St. Pölten');
     res.json({
       route: "Linz → St. Pölten",
       timestamp: new Date().toISOString(),
-      trains: result.trains,
-      source: result.source,
-      cached: result.cached,
-      realTimeAttempted: true
-    });
-  } catch (error) {
-    console.error('❌ Route handler error:', error);
-    res.status(500).json({
-      error: true,
-      message: 'Failed to fetch train data',
-      trains: generateRealisticSchedule('Linz', 'St. Pölten'),
-      source: 'error-fallback'
+      trains: emergencyData,
+      source: 'emergency-fallback',
+      realTimeData: false,
+      error: error.message
     });
   }
 });
@@ -365,64 +519,60 @@ app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok',
     timestamp: new Date().toISOString(),
-    version: '3.0.0',
-    description: 'ÖBB Real-time Proxy with realistic schedules'
+    version: '4.0.0',
+    scrapingInProgress: isScrapingInProgress,
+    features: ['web-scraping', 'no-cache', 'real-time-attempts']
   });
 });
 
 app.get('/', (req, res) => {
   res.json({
-    message: 'ÖBB Real-Time API Proxy v3.0',
-    description: 'Attempts real-time data, falls back to realistic ÖBB schedules',
+    message: 'ÖBB Web Scraper Proxy v4.0',
+    description: 'Real-time train data via web scraping - NO CACHE',
     endpoints: [
-      '/trains/stpoelten-linz  - St. Pölten → Linz',
-      '/trains/linz-stpoelten  - Linz → St. Pölten', 
-      '/health                 - Health check',
-      '/debug/cache           - Cache status'
+      '/trains/stpoelten-linz  - Live St. Pölten → Linz',
+      '/trains/linz-stpoelten  - Live Linz → St. Pölten',
+      '/health                 - Service health'
     ],
     features: [
-      '🚄 Realistic ÖBB train schedules',
-      '⏰ Time-based departures',
-      '📊 Dynamic delays based on rush hour',
-      '🚉 Correct platforms and train numbers',
-      '🔄 Attempts real-time data first'
+      '🔍 Multi-method web scraping',
+      '📱 Mobile interface parsing', 
+      '🔗 Direct HAFAS API calls',
+      '🌐 Website HTML parsing',
+      '❌ No caching - always fresh data',
+      '⚡ Real-time delays and departures'
+    ],
+    methods: [
+      '1. Mobile ÖBB interface scraping',
+      '2. Direct HAFAS mgate.exe calls',  
+      '3. Main website HTML parsing',
+      '4. Emergency fallback only if all fail'
     ]
   });
 });
 
-app.get('/debug/cache', (req, res) => {
-  const now = Date.now();
+app.get('/debug/status', (req, res) => {
   res.json({
-    cache: {
-      stpLinz: {
-        hasData: !!cache.stpLinz.data,
-        age: cache.stpLinz.timestamp ? Math.round((now - cache.stpLinz.timestamp)/1000) + 's' : 'never',
-        trainCount: cache.stpLinz.data ? cache.stpLinz.data.length : 0,
-        source: cache.stpLinz.source || 'none'
-      },
-      linzStp: {
-        hasData: !!cache.linzStp.data,
-        age: cache.linzStp.timestamp ? Math.round((now - cache.linzStp.timestamp)/1000) + 's' : 'never',
-        trainCount: cache.linzStp.data ? cache.linzStp.data.length : 0,
-        source: cache.linzStp.source || 'none'
-      }
-    },
-    config: {
-      cacheDuration: CACHE_DURATION + 'ms',
-      currentTime: new Date().toISOString()
-    }
+    scrapingInProgress: isScrapingInProgress,
+    timestamp: new Date().toISOString(),
+    methods: [
+      'Mobile interface scraping',
+      'Direct HAFAS API calls',
+      'Website HTML parsing'
+    ],
+    cachingDisabled: true,
+    version: '4.0.0'
   });
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚄 ÖBB Real-Time API Proxy running on port ${PORT}`);
-  console.log('📍 Based on actual ÖBB timetables with realistic delays');
-  console.log('🔄 Attempts real-time data, falls back to realistic schedules');
-  console.log('\n🛤️  Available endpoints:');
-  console.log('   GET /trains/stpoelten-linz  - St. Pölten → Linz');
-  console.log('   GET /trains/linz-stpoelten  - Linz → St. Pölten');
-  console.log('   GET /health                 - Service status');
-  console.log('   GET /debug/cache           - Cache information');
-  console.log('\n✨ Ready to serve train data!\n');
+  console.log(`🔍 ÖBB Web Scraper Proxy running on port ${PORT}`);
+  console.log('📵 CACHING DISABLED - Always fresh data');
+  console.log('🎯 Multi-method scraping approach:');
+  console.log('   1️⃣  Mobile interface scraping');
+  console.log('   2️⃣  Direct HAFAS API calls');
+  console.log('   3️⃣  Website HTML parsing');
+  console.log('   🆘 Emergency fallback if all fail');
+  console.log('\\n🚄 Ready to scrape real ÖBB data!\\n');
 });

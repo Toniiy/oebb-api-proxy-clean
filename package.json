@@ -1,7 +1,7 @@
 {
-  "name": "oebb-api-proxy",
-  "version": "3.0.0",
-  "description": "ÖBB API proxy with working real-time data - final version",
+  "name": "oebb-scraper-proxy",
+  "version": "4.0.0",
+  "description": "ÖBB API proxy with web scraping for real live data",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -11,6 +11,7 @@
     "oebb",
     "trains",
     "austria",
+    "scraper",
     "real-time"
   ],
   "author": "",
@@ -18,7 +19,9 @@
   "dependencies": {
     "express": "^4.18.2",
     "cors": "^2.8.5",
-    "axios": "^1.7.9"
+    "axios": "^1.7.9",
+    "cheerio": "^1.0.0-rc.12",
+    "puppeteer": "^22.6.5"
   },
   "engines": {
     "node": ">=18.0.0"
