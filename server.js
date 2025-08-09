@@ -5,7 +5,8 @@ const oebbProfile = require('hafas-client/p/oebb/index.js');
 
 const app = express();
 app.use(cors());
-const hafas = createClient(oebbProfile);
+oebbProfile.locale = 'de-AT';
+const hafas = createClient(oebbProfile, 'oebb-proxy');
 
 // caching settings
 const CACHE_DURATION = parseInt(process.env.CACHE_DURATION || '300000');
